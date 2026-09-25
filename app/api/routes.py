@@ -1,0 +1,300 @@
+"""核心 API 路由：health/login/settings/targets/alerts/notify/menu/status。
+
+按 CONTRACT §5 实现。鉴权通过 Cookie woh_session（auth.is_logged_in）。
+"""
+
+from __future__ import annotations
+
+import json
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from pydantic import BaseModel, Field
+from typing import Any
+
+from .. import db, monitor, wecom_client
+from ..settings import DEFAULT_SETTINGS, SECRET_KEYS, MASK, mask_settings, is_masked
+from .auth import is_logged_in, login, logout
+
+router = APIRouter(prefix="/api")
+
+
+# ---------------------------------------------------------------------------
+# 鉴权依赖
+# ---------------------------------------------------------------------------
+
+def require_auth(request: Request) -> None:
+    if not is_logged_in(request):
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+# ---------------------------------------------------------------------------
+# Pydantic 模型
+# ---------------------------------------------------------------------------
+
+class LoginBody(BaseModel):
+    password: str
+
+
+class SettingsBody(BaseModel):
+    # 任意键值对；用 dict 而非字段，因为键名是动态的
+    model_config = {"extra": "allow"}
+
+
+class TargetBody(BaseModel):
+    name: str
+    enabled: bool = True
+    url: str
+    method: str = "GET"
+    headers: Any = "{}"
+    body: str = ""
+    expect_status: str = "200-299"
+    timeout_s: int = 10
+    interval_s: int = 60
+    fail_threshold: int = 2
+    silence_minutes: int = 30
+    notify_recovery: bool = True
+    action_type: str = "none"
+    action_method: str = "POST"
+    action_url: str = ""
+    action_headers: Any = "{}"
+    action_body: str = ""
+    action_confirm: bool = True
+
+
+# ---------------------------------------------------------------------------
+# health / login / logout
+# ---------------------------------------------------------------------------
+
+@router.get("/health")
+async def health() -> dict:
+    return {"ok": True, "version": "1.0.0"}
+
+
+@router.post("/login")
+async def do_login(body: LoginBody, response: Response) -> dict:
+    token = login(body.password)
+    if not token:
+        raise HTTPException(status_code=401, detail="密码错误")
+    response.set_cookie(
+        key="woh_session", value=token, httponly=True,
+        samesite="lax", max_age=7 * 24 * 3600,
+    )
+    return {"ok": True}
+
+
+@router.post("/logout")
+async def do_logout(response: Response) -> dict:
+    logout()
+    response.delete_cookie("woh_session")
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# settings
+# ---------------------------------------------------------------------------
+
+@router.get("/settings")
+async def get_settings(_: None = Depends(require_auth)) -> dict:
+    values = db.get_all_settings()
+    # 补齐缺失键
+    for k, v in DEFAULT_SETTINGS.items():
+        values.setdefault(k, v)
+    return mask_settings(values)
+
+
+@router.put("/settings")
+async def put_settings(body: dict, _: None = Depends(require_auth)) -> dict:
+    # 只接受已知键；值为 MASK 跳过
+    updates = {}
+    for k, v in body.items():
+        if k not in DEFAULT_SETTINGS:
+            continue
+        if k in SECRET_KEYS and is_masked(str(v)):
+            continue
+        updates[k] = str(v)
+    if updates:
+        db.update_settings(updates)
+        # 凭据变更清 token 缓存
+        if any(k.startswith("wecom.") for k in updates):
+            wecom_client.reset_token()
+    return {"ok": True, "updated": list(updates.keys())}
+
+
+@router.post("/settings/test")
+async def test_settings(_: None = Depends(require_auth)) -> dict:
+    ok, detail = wecom_client.test_connection()
+    return {"ok": ok, "detail": detail}
+
+
+# ---------------------------------------------------------------------------
+# targets
+# ---------------------------------------------------------------------------
+
+@router.get("/targets")
+async def get_targets(_: None = Depends(require_auth)) -> list[dict]:
+    targets = db.list_targets()
+    # 附带最近探测状态
+    for t in targets:
+        last = db.get_last_probe(t["id"])
+        t["last_probe"] = last
+    return targets
+
+
+@router.post("/targets")
+async def create_target(body: TargetBody, _: None = Depends(require_auth)) -> dict:
+    data = body.model_dump()
+    return db.create_target(data)
+
+
+@router.put("/targets/{tid}")
+async def update_target(tid: int, body: dict, _: None = Depends(require_auth)) -> dict:
+    result = db.update_target(tid, body)
+    if result is None:
+        raise HTTPException(status_code=404, detail="target not found")
+    return result
+
+
+@router.delete("/targets/{tid}")
+async def delete_target(tid: int, _: None = Depends(require_auth)) -> dict:
+    ok = db.delete_target(tid)
+    if not ok:
+        raise HTTPException(status_code=404, detail="target not found")
+    return {"ok": True}
+
+
+@router.post("/targets/{tid}/probe")
+async def probe_target(tid: int, _: None = Depends(require_auth)) -> dict:
+    target = db.get_target(tid)
+    if target is None:
+        raise HTTPException(status_code=404, detail="target not found")
+    result = monitor.probe_once(target)
+    db.add_probe_result(tid, result["ok"], result["status"],
+                        result["latency_ms"], result["error"])
+    return result
+
+
+@router.post("/targets/{tid}/action")
+async def run_action(tid: int, _: None = Depends(require_auth)) -> dict:
+    target = db.get_target(tid)
+    if target is None:
+        raise HTTPException(status_code=404, detail="target not found")
+    result = monitor._execute_action(target)
+    db.add_event("action", {"target_id": tid, "name": target.get("name"), "result": result})
+    return result
+
+
+@router.get("/targets/{tid}/history")
+async def target_history(tid: int, limit: int = 50,
+                         _: None = Depends(require_auth)) -> list[dict]:
+    return db.get_probe_history(tid, limit)
+
+
+# ---------------------------------------------------------------------------
+# alerts
+# ---------------------------------------------------------------------------
+
+@router.get("/alerts")
+async def get_alerts(limit: int = 50, _: None = Depends(require_auth)) -> list[dict]:
+    return db.list_alerts(limit)
+
+
+# ---------------------------------------------------------------------------
+# notify test
+# ---------------------------------------------------------------------------
+
+@router.post("/notify/test")
+async def notify_test(_: None = Depends(require_auth)) -> dict:
+    try:
+        wecom_client.send_text("[测试] 这是来自 wecom-ops-hub 的测试消息。")
+        return {"ok": True, "detail": "测试消息已发送"}
+    except wecom_client.WeComError as e:
+        return {"ok": False, "detail": str(e)}
+    except Exception as e:
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
+
+# ---------------------------------------------------------------------------
+# silence（菜单/面板控制全局静音）
+# ---------------------------------------------------------------------------
+
+class SilenceBody(BaseModel):
+    minutes: int = 0
+
+
+@router.post("/silence")
+async def set_silence(body: SilenceBody, _: None = Depends(require_auth)) -> dict:
+    if body.minutes <= 0:
+        monitor.unsilence()
+    else:
+        monitor.silence(body.minutes)
+    return {"ok": True, "silence_remaining_minutes": monitor.silence_remaining()}
+
+
+# ---------------------------------------------------------------------------
+# menu
+# ---------------------------------------------------------------------------
+
+def _default_menu_buttons() -> list[dict]:
+    public_url = db.get_setting("panel.public_url", "").strip()
+    buttons = []
+    if public_url:
+        buttons = [
+            {"type": "view", "name": "📊 状态", "url": f"{public_url}/#/status"},
+            {"type": "view", "name": "🧪 自检", "url": f"{public_url}/#/selftest"},
+            {"type": "view", "name": "⚙️ 面板", "url": f"{public_url}/#/settings"},
+        ]
+    buttons.append({"type": "click", "name": "🔕 静音1小时", "key": "SILENCE_1H"})
+    buttons.append({"type": "click", "name": "🔔 解除静音", "key": "UNSILENCE"})
+    return buttons
+
+
+@router.get("/menu")
+async def get_menu(_: None = Depends(require_auth)) -> dict:
+    local = {"button": _default_menu_buttons()}
+    remote = None
+    error = None
+    try:
+        data = wecom_client.menu_get()
+        if data.get("errcode") == 0 and "menu" in data:
+            remote = data["menu"]
+        elif data.get("errcode") == 46003:
+            # 无菜单
+            remote = None
+        else:
+            error = data.get("errmsg", str(data))
+    except wecom_client.WeComError as e:
+        error = str(e)
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+    return {"remote": remote, "local": local, "error": error}
+
+
+@router.put("/menu")
+async def put_menu(body: dict, _: None = Depends(require_auth)) -> dict:
+    if body.get("preset"):
+        buttons = _default_menu_buttons()
+    else:
+        buttons = body.get("button", [])
+    if not buttons:
+        raise HTTPException(status_code=400, detail="button 不能为空")
+    result = wecom_client.menu_create(buttons)
+    db.add_event("menu", {"action": "create", "buttons": buttons, "result": result})
+    return {"ok": result.get("errcode") == 0, "detail": result.get("errmsg", ""), "raw": result}
+
+
+@router.delete("/menu")
+async def del_menu(_: None = Depends(require_auth)) -> dict:
+    result = wecom_client.menu_delete()
+    db.add_event("menu", {"action": "delete", "result": result})
+    return {"ok": result.get("errcode") == 0, "detail": result.get("errmsg", ""), "raw": result}
+
+
+# ---------------------------------------------------------------------------
+# status
+# ---------------------------------------------------------------------------
+
+@router.get("/status")
+async def get_status(_: None = Depends(require_auth)) -> dict:
+    overview = db.get_status_overview()
+    overview["silence_remaining_minutes"] = monitor.silence_remaining()
+    return overview

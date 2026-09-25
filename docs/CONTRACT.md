@@ -11,7 +11,7 @@
 2. **自定义菜单** —— 菜单按钮直达面板，做「查看状态 / 立即自检 / 重启服务 / 静音」等便捷操作
 3. **Web 配置面板** —— 所有设置项都能在面板里改，无需改环境变量
 
-设计原则：**通用**。不写死任何具体业务（不能出现 `antigravity`、`中转池`、`3636` 之类专用值）。
+设计原则：**通用**。不写死任何具体业务、任何部署方的域名/IP/端口/容器名。
 一切通过面板配置。别人一条 `docker compose up -d` + 面板填参数即可用。
 
 ## 1. 文件所有权（一人一文件，禁止跨范围修改）
@@ -117,7 +117,8 @@ CREATE TABLE IF NOT EXISTS events(
 | GET | `/api/menu` | 返回 `{"remote":{...}|null,"local":{...},"error":"..."}` |
 | PUT | `/api/menu` | body `{"button":[...]}` → 保存本地并推 `menu/create` |
 | DELETE | `/api/menu` | 调 `menu/delete` |
-| GET | `/api/status` | 概览：`{"targets_total":n,"targets_down":n,"last_alerts":[...]}` |
+| GET | `/api/status` | 概览：`{"targets_total":n,"targets_down":n,"last_alerts":[...],"silence_remaining_minutes":n}` |
+| POST | `/api/silence` | body `{"minutes":N}`；**N=0 表示立即解除静音**。返回 `{"ok":true,"silence_remaining_minutes":n}` |
 
 ### 企微回调（不鉴权，必须验签）
 
@@ -150,12 +151,18 @@ CREATE TABLE IF NOT EXISTS events(
   {"type":"view","name":"📊 状态","url":"{public_url}/#/status"},
   {"type":"view","name":"🧪 自检","url":"{public_url}/#/selftest"},
   {"type":"view","name":"⚙️ 面板","url":"{public_url}/#/settings"},
-  {"type":"click","name":"🔕 静音1小时","key":"SILENCE_1H"}
+  {"type":"click","name":"🔕 静音1小时","key":"SILENCE_1H"},
+  {"type":"click","name":"🔔 解除静音","key":"UNSILENCE"}
 ]}
 ```
 
-`click` 事件在 `POST /wecom/callback` 里处理：`Event=click`，`EventKey=SILENCE_1H` → 全局静音 60 分钟，
-并回一条消息确认。`public_url` 为空时不要生成 view 型按钮（会报错），改为只生成 click 型。
+`click` 事件在 `POST /wecom/callback` 里处理：
+
+- `EventKey=SILENCE_1H` → 全局静音 60 分钟，回一条确认消息
+- `EventKey=UNSILENCE` → **立即解除静音**（等价 `POST /api/silence {"minutes":0}`），回一条确认消息
+
+> ⚠️ 必须有 `UNSILENCE`：否则用户从菜单点了静音之后就只能干等，是个死胡同。
+> `public_url` 为空时不要生成 view 型按钮（会报错），改为只生成 click 型。
 
 ## 8. 面板 UI 契约
 
