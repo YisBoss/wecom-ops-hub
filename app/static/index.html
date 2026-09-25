@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="theme-color" content="#07c160">
-  <title>企微运维中枢</title>
+  <title>Argus</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -13,13 +13,14 @@
     <header class="topbar" id="topbar" hidden>
       <div class="topbar-brand">
         <span class="topbar-logo">🔧</span>
-        <span class="topbar-title">企微运维中枢</span>
+        <span class="topbar-title">Argus</span>
       </div>
       <nav class="topbar-nav" id="nav">
         <a href="#/status" class="nav-link" data-route="status">概览</a>
         <a href="#/targets" class="nav-link" data-route="targets">探针</a>
         <a href="#/settings" class="nav-link" data-route="settings">设置</a>
         <a href="#/menu" class="nav-link" data-route="menu">菜单</a>
+        <a href="#/selftest" class="nav-link" data-route="selftest">自检</a>
         <a href="#/alerts" class="nav-link" data-route="alerts">告警</a>
       </nav>
       <button class="topbar-logout" id="btnLogout" title="退出登录">退出</button>
@@ -39,7 +40,7 @@
   <div class="login-page" id="loginPage">
     <div class="login-card">
       <div class="login-logo">🔧</div>
-      <h1 class="login-title">企微运维中枢</h1>
+      <h1 class="login-title">Argus</h1>
       <p class="login-sub">请输入管理密码登录</p>
       <form id="loginForm" class="login-form">
         <input type="password" id="loginPassword" class="login-input" placeholder="管理密码" autocomplete="current-password" autofocus>

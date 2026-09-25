@@ -21,7 +21,7 @@ BOOTSTRAP_ADMIN_PASSWORD = os.environ.get("HUB_ADMIN_PASSWORD", "admin")
 DEFAULT_SETTINGS: dict[str, str] = {
     # --- 面板自身 ---
     "panel.admin_password": BOOTSTRAP_ADMIN_PASSWORD,
-    # 公网基址，用于拼回调 URL 和菜单跳转链接。例：https://zzc.example.com:666
+    # 公网基址，用于拼回调 URL 和菜单跳转链接。例：https://hub.example.com
     "panel.public_url": "",
     # --- 企业微信自建应用 ---
     "wecom.corp_id": "",
@@ -33,7 +33,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # 企微 API 基址，一般不用改
     "wecom.api_base": "https://qyapi.weixin.qq.com",
     # 可选：企微 API 反向代理基址。企微有「企业可信IP」白名单，
-    # 若本机出口 IP 不在白名单，可填一个白名单内机器上的反代，例如 https://wx.example.com:666
+    # 若本机出口 IP 不在白名单，可填一个白名单内机器上的反代，例如 https://wx-proxy.example.com
     "wecom.proxy_url": "",
     # 接收人：企微 userid，多个用英文逗号分隔；@all 表示应用可见范围内全部
     "wecom.touser": "@all",
@@ -46,6 +46,10 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "notify.silence_minutes": "30",
     # 恢复时是否补推一条
     "notify.recovery": "true",
+    # --- 外部事件接入 ---
+    # 外部 watcher（如 NAS 上的 am-watch.sh）调 POST /api/ingest 上报事件用的密钥。
+    # 留空则 /api/ingest 整体禁用。生成示例：openssl rand -hex 24
+    "ingest.api_key": "",
     # --- 监控引擎 ---
     # 调度器心跳间隔（秒）
     "monitor.tick_seconds": "30",
@@ -59,6 +63,7 @@ SECRET_KEYS: set[str] = {
     "wecom.secret",
     "wecom.callback_token",
     "wecom.callback_aes_key",
+    "ingest.api_key",
 }
 
 # 面板里这些项用密码框渲染
@@ -66,9 +71,16 @@ PASSWORD_KEYS: set[str] = {
     "panel.admin_password",
     "wecom.secret",
     "wecom.callback_aes_key",
+    "ingest.api_key",
 }
 
 MASK = "********"
+
+# 内部键：存在 settings 表里，但**不是**面板设置项，GET /api/settings 不外泄。
+# 面板保存的本地菜单（菜单页自己读写），放这里避免污染设置接口。
+INTERNAL_SETTING_KEYS: set[str] = {
+    "menu.local",
+}
 
 
 def mask_settings(values: dict[str, str]) -> dict[str, str]:

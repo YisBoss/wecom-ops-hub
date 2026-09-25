@@ -13,7 +13,7 @@ from fastapi.responses import PlainTextResponse, Response as FastResponse
 
 from .. import db, monitor, wecom_client
 
-logger = logging.getLogger("wecom-ops-hub.callback")
+logger = logging.getLogger("argus.callback")
 
 router = APIRouter()
 

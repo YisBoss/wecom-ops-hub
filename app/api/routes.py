@@ -12,7 +12,13 @@ from pydantic import BaseModel, Field
 from typing import Any
 
 from .. import db, monitor, wecom_client
-from ..settings import DEFAULT_SETTINGS, SECRET_KEYS, MASK, mask_settings, is_masked
+from ..settings import (
+    DEFAULT_SETTINGS,
+    INTERNAL_SETTING_KEYS,
+    SECRET_KEYS,
+    mask_settings,
+    is_masked,
+)
 from .auth import is_logged_in, login, logout
 
 router = APIRouter(prefix="/api")
@@ -99,6 +105,9 @@ async def get_settings(_: None = Depends(require_auth)) -> dict:
     # 补齐缺失键
     for k, v in DEFAULT_SETTINGS.items():
         values.setdefault(k, v)
+    # 内部键（如 menu.local）不是设置项，不外泄
+    for k in INTERNAL_SETTING_KEYS:
+        values.pop(k, None)
     return mask_settings(values)
 
 
@@ -205,7 +214,7 @@ async def get_alerts(limit: int = 50, _: None = Depends(require_auth)) -> list[d
 @router.post("/notify/test")
 async def notify_test(_: None = Depends(require_auth)) -> dict:
     try:
-        wecom_client.send_text("[测试] 这是来自 wecom-ops-hub 的测试消息。")
+        wecom_client.send_text("[测试] 这是来自 Argus 的测试消息。")
         return {"ok": True, "detail": "测试消息已发送"}
     except wecom_client.WeComError as e:
         return {"ok": False, "detail": str(e)}
@@ -235,28 +244,98 @@ async def set_silence(body: SilenceBody, _: None = Depends(require_auth)) -> dic
 # ---------------------------------------------------------------------------
 
 def _default_menu_buttons() -> list[dict]:
-    """默认菜单模板。企微顶层最多 3 个按钮（errcode 40058）。"""
-    public_url = db.get_setting("panel.public_url", "").strip()
-    buttons: list[dict] = []
-    if public_url:
-        # 面板入口（含状态/自检/设置等所有页面，hash 路由）
-        buttons.append({"type": "view", "name": "⚙️ 面板", "url": f"{public_url}/#/status"})
-    buttons.append({"type": "click", "name": "🔕 静音1小时", "key": "SILENCE_1H"})
-    buttons.append({"type": "click", "name": "🔔 解除静音", "key": "UNSILENCE"})
-    return buttons
+    """默认菜单模板（CONTRACT §7）。
+
+    企微硬限制：顶层 button 只能 1~3 个（errcode 40058），父按钮最多 5 个子按钮，
+    所以功能按钮必须收进「🔧 操作」的 sub_button 里，不能平铺在顶层。
+    public_url 为空时不能生成 view 型按钮（企微会报错），退化成 2 个 click。
+    """
+    public_url = db.get_setting("panel.public_url", "").strip().rstrip("/")
+    if not public_url:
+        return [
+            {"type": "click", "name": "🔕 静音1小时", "key": "SILENCE_1H"},
+            {"type": "click", "name": "🔔 解除静音", "key": "UNSILENCE"},
+        ]
+    return [
+        {"type": "view", "name": "📊 状态", "url": f"{public_url}/#/status"},
+        {"type": "view", "name": "⚙️ 面板", "url": f"{public_url}/#/settings"},
+        {"name": "🔧 操作", "sub_button": [
+            {"type": "click", "name": "🔕 静音1小时", "key": "SILENCE_1H"},
+            {"type": "click", "name": "🔔 解除静音", "key": "UNSILENCE"},
+            {"type": "view", "name": "🧪 自检", "url": f"{public_url}/#/selftest"},
+            {"type": "view", "name": "🚨 告警", "url": f"{public_url}/#/alerts"},
+        ]},
+    ]
+
+
+def _validate_leaf(button: Any) -> str | None:
+    """校验单个可点击按钮（view / click）。"""
+    if not isinstance(button, dict):
+        return "必须是对象"
+    btype = button.get("type")
+    if btype == "view":
+        return None if button.get("url") else "view 型必须有 url"
+    if btype == "click":
+        return None if button.get("key") else "click 型必须有 key"
+    return "type 只能是 view 或 click"
+
+
+def _validate_menu_buttons(buttons: Any) -> str | None:
+    """推送前本地校验菜单结构（CONTRACT §7）。通过返回 None，否则返回错误说明。
+
+    目的是把企微的 40058 之类错误在本地拦下，换成用户看得懂的话。
+    """
+    if not isinstance(buttons, list) or not 1 <= len(buttons) <= 3:
+        return "顶层 button 数量必须是 1~3 个（企微硬限制，errcode 40058）"
+    for i, b in enumerate(buttons, 1):
+        if not isinstance(b, dict) or not b.get("name"):
+            return f"第 {i} 个按钮缺少 name"
+        subs = b.get("sub_button")
+        if subs is None:
+            err = _validate_leaf(b)
+            if err:
+                return f"「{b['name']}」：{err}"
+            continue
+        if not isinstance(subs, list) or not 1 <= len(subs) <= 5:
+            return f"「{b['name']}」的子按钮数量必须是 1~5 个"
+        for k in ("type", "key", "url"):
+            if b.get(k):
+                return f"「{b['name']}」是父按钮，不能再带 {k}"
+        for j, s in enumerate(subs, 1):
+            err = _validate_leaf(s)
+            if err:
+                return f"「{b['name']}」第 {j} 个子按钮：{err}"
+    return None
+
+
+def _local_menu() -> dict:
+    """本地菜单：优先返回面板保存过的，没有则生成默认模板。"""
+    saved = db.get_setting("menu.local", "")
+    if saved:
+        try:
+            data = json.loads(saved)
+        except (ValueError, TypeError):
+            data = None
+        if isinstance(data, dict) and data.get("button"):
+            return data
+    return {"button": _default_menu_buttons()}
 
 
 @router.get("/menu")
 async def get_menu(_: None = Depends(require_auth)) -> dict:
-    local = {"button": _default_menu_buttons()}
+    local = _local_menu()
     remote = None
     error = None
     try:
         data = wecom_client.menu_get()
-        if data.get("errcode") == 0 and "menu" in data:
-            remote = data["menu"]
-        elif data.get("errcode") == 46003:
-            # 无菜单
+        code = data.get("errcode")
+        if code == 0:
+            # 【实测】有菜单时 button 在**顶层**；部分文档写 {"menu":{"button":[...]}}，两种都兼容
+            remote = data.get("menu")
+            if remote is None and data.get("button"):
+                remote = {"button": data["button"]}
+        elif code == 46003:
+            # 46003 = 菜单不存在
             remote = None
         else:
             error = data.get("errmsg", str(data))
@@ -273,21 +352,26 @@ async def put_menu(body: dict, _: None = Depends(require_auth)) -> dict:
         buttons = _default_menu_buttons()
     else:
         buttons = body.get("button", [])
-    if not buttons:
-        raise HTTPException(status_code=400, detail="button 不能为空")
-    if len(buttons) > 3:
-        raise HTTPException(
-            status_code=400,
-            detail="顶层按钮最多 3 个（企微限制 errcode 40058）；子菜单请用二级分组",
-        )
-    result = wecom_client.menu_create(buttons)
+    err = _validate_menu_buttons(buttons)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    # 先存本地：即使推送失败（例如反代没放行 menu/create），用户的编辑也不会丢
+    db.update_settings({"menu.local": json.dumps({"button": buttons}, ensure_ascii=False)})
+    try:
+        result = wecom_client.menu_create(buttons)
+    except wecom_client.WeComError as e:
+        db.add_event("menu", {"action": "create", "buttons": buttons, "error": str(e)})
+        raise HTTPException(status_code=502, detail=str(e))
     db.add_event("menu", {"action": "create", "buttons": buttons, "result": result})
     return {"ok": result.get("errcode") == 0, "detail": result.get("errmsg", ""), "raw": result}
 
 
 @router.delete("/menu")
 async def del_menu(_: None = Depends(require_auth)) -> dict:
-    result = wecom_client.menu_delete()
+    try:
+        result = wecom_client.menu_delete()
+    except wecom_client.WeComError as e:
+        raise HTTPException(status_code=502, detail=str(e))
     db.add_event("menu", {"action": "delete", "result": result})
     return {"ok": result.get("errcode") == 0, "detail": result.get("errmsg", ""), "raw": result}
 

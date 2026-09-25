@@ -23,7 +23,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger("wecom-ops-hub")
+logger = logging.getLogger("argus")
 
 
 @asynccontextmanager
@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI):
     monitor.stop()
 
 
-app = FastAPI(title="wecom-ops-hub", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Argus", version="1.0.0", lifespan=lifespan)
 
 # API 路由（/api 前缀）
 app.include_router(api_routes.router)

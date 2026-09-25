@@ -1,4 +1,4 @@
-/* 企微运维中枢 — 面板前端逻辑
+/* Argus — 面板前端逻辑
  * 纯原生 JS，无依赖。Hash 路由，fetch 调 /api。
  * 契约见 docs/CONTRACT.md §5, §8。
  */
@@ -138,6 +138,7 @@
     targets: renderTargets,
     settings: renderSettings,
     menu: renderMenu,
+    selftest: renderSelftest,
     alerts: renderAlerts
   };
 
@@ -232,6 +233,7 @@
     return el("table", { class: "data" }, [
       el("thead", {}, [el("tr", {}, [
         el("th", { text: "时间" }), el("th", { text: "类型" }),
+        el("th", { text: "来源" }),
         showTarget ? el("th", { text: "目标" }) : null,
         el("th", { text: "消息" }), el("th", { text: "送达" })
       ].filter(Boolean))]),
@@ -239,6 +241,7 @@
         return el("tr", {}, [
           el("td", { text: fmtTime(a.ts) }),
           el("td", {}, [alertKindTag(a.kind)]),
+          el("td", {}, [alertSourceTag(a)]),
           showTarget ? el("td", { text: a.target_name || a.target_id || "—" }) : null,
           el("td", { text: a.message }),
           el("td", {}, [el("span", { class: "tag " + (a.delivered ? "tag-ok" : "tag-gray"), text: a.delivered ? "已送达" : "未送达" })])
@@ -248,9 +251,20 @@
   }
 
   function alertKindTag(kind) {
-    var map = { fail: ["tag-down", "故障"], recovery: ["tag-ok", "恢复"], test: ["tag-warn", "测试"] };
+    var map = {
+      fail: ["tag-down", "故障"], recovery: ["tag-ok", "恢复"],
+      test: ["tag-warn", "测试"], external: ["tag-gray", "外部"], info: ["tag-gray", "信息"]
+    };
     var m = map[kind] || ["tag-gray", kind || "—"];
     return el("span", { class: "tag " + m[0], text: m[1] });
+  }
+
+  function alertSourceTag(a) {
+    // 探针告警：有 target_id；外部接入：target_id 为 null
+    if (a.target_id == null) {
+      return el("span", { class: "tag tag-gray", text: "外部接入" });
+    }
+    return el("span", { class: "tag tag-ok", text: "探针" });
   }
 
   // ===== 目标页 =====
@@ -543,7 +557,7 @@
       ], "用于验证企微回调请求。填好后把下面的回调 URL 配到企微后台。"));
       card.appendChild(settingsSection("企微 API", [
         textField("wecom.api_base", "API 基址", s["wecom.api_base"], "https://qyapi.weixin.qq.com"),
-        textField("wecom.proxy_url", "API 反代 (可选)", s["wecom.proxy_url"], "https://wx-proxy.example.com:666"),
+        textField("wecom.proxy_url", "API 反代 (可选)", s["wecom.proxy_url"], "https://wx-proxy.example.com"),
       ], "若本机出口 IP 不在企微可信 IP 白名单，可填一个反代地址。"));
       card.appendChild(settingsSection("接收人", [
         textField("wecom.touser", "接收人 UserID", s["wecom.touser"], "企微 userid，多个用逗号分隔；@all 表示应用可见范围内全部"),
@@ -559,6 +573,9 @@
         numField("monitor.tick_seconds", "调度心跳(秒)", s["monitor.tick_seconds"]),
         numField("log.retain_days", "日志保留(天)", s["log.retain_days"]),
       ], "调度器多久跑一轮、探测结果保留多久。"));
+      card.appendChild(settingsSection("外部事件接入", [
+        pwdField("ingest.api_key", "接入密钥 (Ingest Key)", s["ingest.api_key"], true),
+      ], "外部脚本（如 NAS 上的 watcher）通过 POST /api/ingest 汇入告警，复用去重/静音/通知。留空则禁用该接口。"));
 
       // 回调 URL 展示
       var pub = s["panel.public_url"] || "";
@@ -568,6 +585,15 @@
       card.appendChild(el("div", { class: "copy-box" }, [
         el("input", { class: "form-input", readonly: true, value: cbUrl, id: "callbackUrl" }),
         el("button", { class: "btn", text: "复制", onclick: function () { copyText(cbUrl); } })
+      ]));
+
+      // Ingest URL 展示
+      var ingestUrl = pub ? pub.replace(/\/$/, "") + "/api/ingest" : "(请先填公网基址)";
+      card.appendChild(el("div", { class: "section-title", text: "外部接入 URL" }));
+      card.appendChild(el("p", { class: "muted", text: "外部脚本 POST 到这个地址，请求头带 X-Ingest-Key: <接入密钥>：" }));
+      card.appendChild(el("div", { class: "copy-box" }, [
+        el("input", { class: "form-input", readonly: true, value: ingestUrl, id: "ingestUrl" }),
+        el("button", { class: "btn", text: "复制", onclick: function () { copyText(ingestUrl); } })
       ]));
 
       // 测试按钮区
@@ -693,19 +719,29 @@
     var wrap = el("div", { class: "table-wrap" });
     var btns = menu.button || [];
     if (!btns.length) { wrap.appendChild(emptyState("空菜单")); return wrap; }
+    var rows = [];
+    btns.forEach(function (b) {
+      rows.push(menuRow(b, false));
+      (b.sub_button || []).forEach(function (s) { rows.push(menuRow(s, true)); });
+    });
     wrap.appendChild(el("table", { class: "data" }, [
       el("thead", {}, [el("tr", {}, [
         el("th", { text: "名称" }), el("th", { text: "类型" }), el("th", { text: "URL / Key" })
       ])]),
-      el("tbody", {}, btns.map(function (b) {
-        return el("tr", {}, [
-          el("td", { text: b.name || "—" }),
-          el("td", {}, [el("span", { class: "tag tag-gray", text: b.type || "—" })]),
-          el("td", { class: "mono", text: b.url || b.key || "—" })
-        ]);
-      }))
+      el("tbody", {}, rows)
     ]));
     return wrap;
+  }
+
+  function menuRow(b, isSub) {
+    var name = el("span", { text: (isSub ? "└ " : "") + (b.name || "—") });
+    if (isSub) name.style.paddingLeft = "14px";
+    var type = b.type || (b.sub_button ? "分组" : "—");
+    return el("tr", {}, [
+      el("td", {}, [name]),
+      el("td", {}, [el("span", { class: "tag tag-gray", text: type })]),
+      el("td", { class: "mono", text: b.url || b.key || "—" })
+    ]);
   }
 
   function pushMenu(preset) {
@@ -736,6 +772,51 @@
         }).catch(function () {});
       } })
     ]);
+  }
+
+  // ===== 自检页 =====
+  function renderSelftest() {
+    var v = $("#view");
+    v.innerHTML = "";
+
+    var log = el("div", { class: "mono", style: "white-space:pre-wrap;margin-top:14px;font-size:13px;line-height:1.7" });
+    function say(line) { log.textContent += line + "\n"; }
+
+    function runStep(label, path) {
+      say("… " + label);
+      api.post(path).then(function (r) {
+        say((r.ok ? "✅ " : "❌ ") + label + "：" + (r.detail || (r.ok ? "OK" : "失败")));
+      }).catch(function () { say("❌ " + label + "：请求失败"); });
+    }
+
+    function probeAll() {
+      say("… 拉取目标列表");
+      api.get("/api/targets").then(function (list) {
+        if (!list || !list.length) { say("（还没有配置任何目标）"); return; }
+        say("共 " + list.length + " 个目标，逐个探测：");
+        list.forEach(function (t) {
+          api.post("/api/targets/" + t.id + "/probe").then(function (r) {
+            say((r.ok ? "✅ " : "❌ ") + (t.name || t.id) +
+              "  " + (r.status != null ? r.status : "-") +
+              (r.latency_ms != null ? "  " + r.latency_ms + "ms" : "") +
+              (r.error ? "  " + r.error : ""));
+          }).catch(function () { say("❌ " + (t.name || t.id) + "：请求失败"); });
+        });
+      }).catch(function () { say("❌ 拉取目标列表失败"); });
+    }
+
+    var card = el("div", { class: "card" }, [
+      el("div", { class: "card-title", text: "自检" }),
+      el("p", { class: "muted", text: "按顺序检查企微凭据 → 消息通道 → 所有监控目标。企微菜单里的「🧪 自检」就是跳到这一页。" }),
+      el("div", { style: "display:flex;gap:8px;flex-wrap:wrap" }, [
+        el("button", { class: "btn btn-primary", text: "① 测试企微连接", onclick: function () { runStep("企微连接", "/api/settings/test"); } }),
+        el("button", { class: "btn", text: "② 发测试消息", onclick: function () { runStep("测试消息", "/api/notify/test"); } }),
+        el("button", { class: "btn", text: "③ 探测全部目标", onclick: probeAll }),
+        el("button", { class: "btn", text: "清空输出", onclick: function () { log.textContent = ""; } }),
+      ]),
+      log
+    ]);
+    v.appendChild(card);
   }
 
   // ===== 告警页 =====

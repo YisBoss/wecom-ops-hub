@@ -1,5 +1,7 @@
-# wecom-ops-hub
+# Argus
 
+> 名字取自希腊神话里的百眼巨人 —— 永不闭眼的守望者。
+>
 > 企业微信自建应用的服务端：HTTP 探针监控告警 + 自建应用菜单 + 全功能 Web 配置面板。
 > 一条 `docker compose up -d` 起服务，面板里填自己的企微参数就能用。
 
@@ -24,13 +26,13 @@
 
 ```bash
 # 下载 docker-compose.yml（或从仓库自取）
-mkdir -p wecom-ops-hub && cd wecom-ops-hub
+mkdir -p argus && cd argus
 
 cat > docker-compose.yml <<'EOF'
 services:
-  wecom-ops-hub:
-    image: ghcr.io/yisboss/wecom-ops-hub:latest
-    container_name: wecom-ops-hub
+  argus:
+    image: ghcr.io/yisboss/argus:latest
+    container_name: argus
     restart: unless-stopped
     ports:
       - "${HUB_PORT:-8080}:8080"
@@ -61,8 +63,8 @@ docker compose up -d
 > 改用从源码构建 —— 效果完全一样，且不依赖任何镜像仓库：
 >
 > ```bash
-> git clone https://github.com/YisBoss/wecom-ops-hub.git
-> cd wecom-ops-hub
+> git clone https://github.com/YisBoss/argus.git
+> cd argus
 > cp .env.example .env      # 改掉 HUB_ADMIN_PASSWORD
 > docker compose -f docker-compose.build.yml up -d --build
 > ```
@@ -129,7 +131,7 @@ docker compose up -d
 ## 项目结构
 
 ```
-wecom-ops-hub/
+argus/
 ├── app/
 │   ├── settings.py        # 配置项 schema（契约文件）
 │   ├── api/               # 后端路由

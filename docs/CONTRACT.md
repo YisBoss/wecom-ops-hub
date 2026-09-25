@@ -5,7 +5,7 @@
 
 ## 0. 项目定位
 
-`wecom-ops-hub` / 企微运维中枢：**企业微信自建应用**的服务端，提供三件事
+`Argus` —— 企微运维中枢：**企业微信自建应用**的服务端，提供三件事
 
 1. **监控告警** —— 任意 HTTP 探针失败/恢复 → 推送到企微应用消息
 2. **自定义菜单** —— 菜单按钮直达面板，做「查看状态 / 立即自检 / 重启服务 / 静音」等便捷操作
@@ -27,7 +27,7 @@
 
 **Git 操作全部由主 Agent 执行。** 其他人只往磁盘写文件，不要 `git add/commit/push`。
 
-工作目录：`/workspace/wecom-ops-hub/`
+工作目录：`/workspace/argus/`
 
 ## 2. 运行时约定
 
@@ -42,8 +42,12 @@
 见 `app/settings.py` 的 `DEFAULT_SETTINGS`。存储方式：SQLite 表 `settings(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT)`，
 启动时用 `DEFAULT_SETTINGS` 补齐缺失键。
 
-敏感项（`SECRET_KEYS`）：`panel.admin_password`、`wecom.secret`、`wecom.callback_token`、`wecom.callback_aes_key`。
+敏感项（`SECRET_KEYS`）：`panel.admin_password`、`wecom.secret`、`wecom.callback_token`、`wecom.callback_aes_key`、`ingest.api_key`。
 `GET /api/settings` 返回时用 `settings.mask_settings()` 打码成 `********`；`PUT` 时若收到 `********` 表示「不修改」。
+
+**内部键**（`settings.INTERNAL_SETTING_KEYS`）：存在 `settings` 表里但**不是**面板设置项，
+`GET /api/settings` 必须剔除、`PUT /api/settings` 不接受。目前只有 `menu.local`
+（菜单页保存的本地菜单 JSON，键名固定为 `menu.local`，值为 `{"button":[...]}` 的 JSON 字符串）。
 
 ## 4. 数据库表结构（固定）
 
@@ -83,7 +87,7 @@ CREATE TABLE IF NOT EXISTS probe_results(
 
 CREATE TABLE IF NOT EXISTS alerts(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  target_id INTEGER, ts TEXT NOT NULL, kind TEXT NOT NULL,  -- fail | recovery | test
+  target_id INTEGER, ts TEXT NOT NULL, kind TEXT NOT NULL,  -- fail | recovery | test | external
   message TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0
 );
 
@@ -114,11 +118,45 @@ CREATE TABLE IF NOT EXISTS events(
 | GET | `/api/targets/{id}/history?limit=50` | 最近探测记录 |
 | GET | `/api/alerts?limit=50` | 告警历史 |
 | POST | `/api/notify/test` | 发一条测试消息到企微，返回 `{"ok":bool,"detail":"..."}` |
-| GET | `/api/menu` | 返回 `{"remote":{...}|null,"local":{...},"error":"..."}` |
-| PUT | `/api/menu` | body `{"button":[...]}` → 保存本地并推 `menu/create` |
-| DELETE | `/api/menu` | 调 `menu/delete` |
+| GET | `/api/menu` | 返回 `{"remote":{...}|null,"local":{...},"error":"..."}`。`local` 优先返回面板保存过的（`menu.local`），否则是默认模板 |
+| PUT | `/api/menu` | body `{"button":[...]}` 或 `{"preset":true}`；先本地校验（见 §7），不通过 → `400 {"detail":"..."}`；通过则存 `menu.local` 并推 `menu/create`；推送失败 → `502 {"detail":"..."}` |
+| DELETE | `/api/menu` | 调 `menu/delete`；失败 → `502 {"detail":"..."}` |
 | GET | `/api/status` | 概览：`{"targets_total":n,"targets_down":n,"last_alerts":[...],"silence_remaining_minutes":n}` |
 | POST | `/api/silence` | body `{"minutes":N}`；**N=0 表示立即解除静音**。返回 `{"ok":true,"silence_remaining_minutes":n}` |
+| POST | `/api/ingest` | **外部事件接入**（不走 Cookie，用 `X-Ingest-Key` 头鉴权）。详见 §5.1 |
+
+### 5.1 外部事件接入 `POST /api/ingest`
+
+**用途**：让**外部 watcher**（例如 NAS 上的 `am-watch.sh`）把告警统一汇入本服务，
+复用去重 / 静音 / 告警历史 / 菜单查询，而不是各自直推企微。
+
+**鉴权**：请求头 `X-Ingest-Key: <ingest.api_key>`。
+`ingest.api_key` 为空时**该接口整体禁用**，一律返回 `403 {"error":"ingest disabled"}`；
+鉴权失败返回 `401 {"error":"unauthorized"}`。
+（**不要**用 Cookie 鉴权 —— 外部脚本拿不到 Cookie。）
+
+**请求体**（JSON）：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `source` | 是 | 来源标识，如 `am-watch`。写入 `events.source` |
+| `kind` | 是 | `fail` \| `recovery` \| `info` |
+| `message` | 是 | 人类可读文本，直接作为企微消息正文 |
+| `dedup_key` | 否 | 去重键。同一 `dedup_key` 在 `notify.silence_minutes` 内**不重复推送** |
+
+**行为**：
+
+1. 一律写 `events` 表（`payload` = 原始请求体 JSON 字符串）
+2. `kind=info` → 只写 `events`，**不推送、不写 alerts**
+3. `kind=fail` / `recovery` → 写 `alerts`（`target_id=NULL`，`kind` 原样存 `fail`/`recovery`）
+   - 处于**全局静音**期 → `delivered=0`，不推送
+   - 否则推送企微，成功则 `delivered=1`
+   - `dedup_key` 命中且在静音窗口内 → `delivered=0`，不推送
+
+**响应**：`{"ok":true,"alert_id":<int|null>,"delivered":<bool>,"deduped":<bool>}`
+
+**边界约定**：外部 watcher 的**自愈动作留在它自己那边**（它才有一键重启 / 换出口的权限），
+本服务只负责**汇总与通知**，不反向控制外部系统。
 
 ### 企微回调（不鉴权，必须验签）
 
@@ -198,6 +236,7 @@ CREATE TABLE IF NOT EXISTS events(
 - `#/targets` 目标增删改 + 立即探测 + 执行动作 + 历史
 - `#/settings` 企微参数 + 通知策略 + 测试按钮 + 回调 URL 展示（带一键复制）
 - `#/menu` 菜单编辑 + 一键生成默认菜单 + 推送/删除
+- `#/selftest` 自检（企微连通性测试 + 发测试消息 + 一键探测全部目标）
 - `#/alerts` 告警历史
 
 要求：**中文界面**、响应式（手机企微里点开要能用）、不引入外部 CDN 依赖（离线可用）。

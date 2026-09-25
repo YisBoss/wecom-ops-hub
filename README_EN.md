@@ -1,5 +1,7 @@
-# wecom-ops-hub
+# Argus
 
+> Named after the hundred-eyed giant of Greek myth — the watchman who never closes his eyes.
+>
 > An enterprise-WeChat (WeCom) self-built application server: HTTP probe monitoring & alerting, custom app menu, and a full web configuration panel.
 > Run `docker compose up -d`, fill in your WeCom credentials in the panel, and you're done.
 
@@ -18,13 +20,13 @@ WeCom's "receive message" callback and menu links require the panel to have a pu
 ### 2. Pull the image and start
 
 ```bash
-mkdir -p wecom-ops-hub && cd wecom-ops-hub
+mkdir -p argus && cd argus
 
 cat > docker-compose.yml <<'EOF'
 services:
-  wecom-ops-hub:
-    image: ghcr.io/yisboss/wecom-ops-hub:latest
-    container_name: wecom-ops-hub
+  argus:
+    image: ghcr.io/yisboss/argus:latest
+    container_name: argus
     restart: unless-stopped
     ports:
       - "${HUB_PORT:-8080}:8080"

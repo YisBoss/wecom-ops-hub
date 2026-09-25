@@ -5,9 +5,9 @@
 #    docker compose -f docker-compose.build.yml up -d --build
 
 services:
-  wecom-ops-hub:
-    image: ghcr.io/yisboss/wecom-ops-hub:latest
-    container_name: wecom-ops-hub
+  argus:
+    image: ghcr.io/yisboss/argus:latest
+    container_name: argus
     restart: unless-stopped
     ports:
       # 左边是宿主机端口（可用 .env 里的 HUB_PORT 改），右边固定是容器内的 8080

@@ -21,7 +21,7 @@ import httpx
 
 from . import db, wecom_client
 
-logger = logging.getLogger("wecom-ops-hub.monitor")
+logger = logging.getLogger("argus.monitor")
 
 _stop_event = threading.Event()
 _thread: threading.Thread | None = None

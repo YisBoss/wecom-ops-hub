@@ -6,20 +6,20 @@
 #   - 想固定/审计构建产物
 #
 # 用法：
-#   git clone https://github.com/YisBoss/wecom-ops-hub.git
-#   cd wecom-ops-hub
+#   git clone https://github.com/YisBoss/argus.git
+#   cd argus
 #   docker compose -f docker-compose.build.yml up -d --build
 #
 # 与 docker-compose.yml 的唯一区别：多了 build，去掉了 image。
 # 两者都用同一份 .env，数据目录也一致，可以随时互换。
 
 services:
-  wecom-ops-hub:
+  argus:
     build:
       context: .
       dockerfile: Dockerfile
-    image: wecom-ops-hub:local
-    container_name: wecom-ops-hub
+    image: argus:local
+    container_name: argus
     restart: unless-stopped
     ports:
       - "${HUB_PORT:-8080}:8080"

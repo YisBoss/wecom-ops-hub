@@ -49,6 +49,21 @@ def _agent_id() -> int:
         return 0
 
 
+def _json_or_raise(resp: httpx.Response, what: str) -> dict:
+    """解析企微响应体。
+
+    若 `wecom.proxy_url` 指向的是「路径白名单」式反代，未放行的路径会返回 404/HTML，
+    此时 `resp.json()` 会抛 JSONDecodeError（用户完全看不懂）。这里转成可读错误。
+    """
+    try:
+        return resp.json()
+    except ValueError:
+        raise WeComError(
+            f"{what} 返回了非 JSON 内容（HTTP {resp.status_code}）。"
+            "若配置了 wecom.proxy_url，多半是该反代没有放行这条路径。"
+        )
+
+
 # ---------------------------------------------------------------------------
 # token 缓存
 # ---------------------------------------------------------------------------
@@ -73,7 +88,7 @@ def get_token() -> str:
 
     url = f"{_api_base()}/cgi-bin/gettoken"
     resp = httpx.get(url, params={"corpid": corpid, "corpsecret": secret}, timeout=10)
-    data = resp.json()
+    data = _json_or_raise(resp, "gettoken")
     if data.get("errcode") != 0:
         raise WeComError(f"gettoken 失败: {data.get('errmsg', data)}")
 
@@ -119,7 +134,7 @@ def send_text(content: str, touser: str = "", toparty: str = "") -> dict:
     }
     url = f"{_api_base()}/cgi-bin/message/send"
     resp = httpx.post(url, params={"access_token": token}, json=body, timeout=10)
-    data = resp.json()
+    data = _json_or_raise(resp, "message/send")
     if data.get("errcode") != 0:
         raise WeComError(f"send 失败: {data.get('errmsg', data)}")
     return data
@@ -137,7 +152,7 @@ def menu_create(buttons: list[dict]) -> dict:
         url, params={"access_token": token, "agentid": agentid},
         json={"button": buttons}, timeout=10,
     )
-    data = resp.json()
+    data = _json_or_raise(resp, "menu/create")
     if data.get("errcode") != 0:
         raise WeComError(f"menu/create 失败: {data.get('errmsg', data)}")
     return data
@@ -150,7 +165,7 @@ def menu_get() -> dict:
     resp = httpx.get(
         url, params={"access_token": token, "agentid": agentid}, timeout=10,
     )
-    return resp.json()
+    return _json_or_raise(resp, "menu/get")
 
 
 def menu_delete() -> dict:
@@ -160,7 +175,7 @@ def menu_delete() -> dict:
     resp = httpx.get(
         url, params={"access_token": token, "agentid": agentid}, timeout=10,
     )
-    return resp.json()
+    return _json_or_raise(resp, "menu/delete")
 
 
 # ---------------------------------------------------------------------------

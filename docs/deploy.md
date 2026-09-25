@@ -8,13 +8,13 @@ API/表结构/路径的唯一权威是 [`CONTRACT.md`](CONTRACT.md) —— 本�
 ### 方式 A：拉预构建镜像（快）
 
 ```bash
-git clone https://github.com/YisBoss/wecom-ops-hub.git
-cd wecom-ops-hub
+git clone https://github.com/YisBoss/argus.git
+cd argus
 cp .env.example .env      # 至少改掉 HUB_ADMIN_PASSWORD
 docker compose up -d
 ```
 
-镜像在 GHCR：`ghcr.io/yisboss/wecom-ops-hub:latest`，多架构（amd64 + arm64）。
+镜像在 GHCR：`ghcr.io/yisboss/argus:latest`，多架构（amd64 + arm64）。
 
 > ⚠️ 如果 `docker compose up -d` 报 `denied` / `not found`，多半是两种情况：
 > 1. **访问不了 ghcr.io**（国内网络常见）→ 改用方式 B
@@ -25,8 +25,8 @@ docker compose up -d
 仓库里已经带了一份现成的 compose 文件，直接用：
 
 ```bash
-git clone https://github.com/YisBoss/wecom-ops-hub.git
-cd wecom-ops-hub
+git clone https://github.com/YisBoss/argus.git
+cd argus
 cp .env.example .env
 docker compose -f docker-compose.build.yml up -d --build
 ```
@@ -38,7 +38,7 @@ docker compose -f docker-compose.build.yml up -d --build
 GHCR 的容器包**默认是私有的**，即使仓库是公开的。如果你 fork 了这个项目、
 用自己的账号跑 CI，需要手动把包设为公开，别人才能拉：
 
-> GitHub → 右上角头像 → **Your profile** → **Packages** → 选中 `wecom-ops-hub`
+> GitHub → 右上角头像 → **Your profile** → **Packages** → 选中 `argus`
 > → **Package settings**（右下角）→ **Change visibility** → **Public**
 
 没设公开也不影响自己用 —— 只是别人拉不到，需要走方式 B。
