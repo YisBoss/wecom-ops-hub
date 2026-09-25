@@ -1,0 +1,37 @@
+# 从源码构建（不依赖镜像仓库）
+#
+# 适用场景：
+#   - 无法访问 ghcr.io（例如国内网络）
+#   - 想改代码后自己构建
+#   - 想固定/审计构建产物
+#
+# 用法：
+#   git clone https://github.com/YisBoss/wecom-ops-hub.git
+#   cd wecom-ops-hub
+#   docker compose -f docker-compose.build.yml up -d --build
+#
+# 与 docker-compose.yml 的唯一区别：多了 build，去掉了 image。
+# 两者都用同一份 .env，数据目录也一致，可以随时互换。
+
+services:
+  wecom-ops-hub:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wecom-ops-hub:local
+    container_name: wecom-ops-hub
+    restart: unless-stopped
+    ports:
+      - "${HUB_PORT:-8080}:8080"
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+      HUB_ADMIN_PASSWORD: "${HUB_ADMIN_PASSWORD:-admin}"
+      HUB_DATA_DIR: "/data"
+    volumes:
+      - "${HUB_DATA_DIR:-./data}:/data"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

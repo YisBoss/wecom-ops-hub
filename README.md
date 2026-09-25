@@ -57,6 +57,16 @@ EOF
 docker compose up -d
 ```
 
+> **拉不到镜像？** 如果这一步报 `denied` 或 `not found`（国内网络访问不了 ghcr.io，或包未设为公开），
+> 改用从源码构建 —— 效果完全一样，且不依赖任何镜像仓库：
+>
+> ```bash
+> git clone https://github.com/YisBoss/wecom-ops-hub.git
+> cd wecom-ops-hub
+> cp .env.example .env      # 改掉 HUB_ADMIN_PASSWORD
+> docker compose -f docker-compose.build.yml up -d --build
+> ```
+
 启动后访问 `http://<宿主机IP>:<HUB_PORT>`，用初始密码登录（默认 `admin`，**请立刻在面板里改掉**）。
 
 ### 3. 在企业微信后台创建自建应用

@@ -1,8 +1,12 @@
+# 默认方式：拉取已构建好的镜像（快）
+#    docker compose up -d
+#
+# 如果拉不到镜像（例如国内网络访问不了 ghcr.io），改用从源码构建：
+#    docker compose -f docker-compose.build.yml up -d --build
+
 services:
   wecom-ops-hub:
     image: ghcr.io/yisboss/wecom-ops-hub:latest
-    # 想自己构建就把下面这行注释打开、并把 image 那行注释掉
-    # build: .
     container_name: wecom-ops-hub
     restart: unless-stopped
     ports:
