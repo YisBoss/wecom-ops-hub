@@ -1,0 +1,180 @@
+# 冻结契约（v1）— 任何人不要擅自改本文件里的字段名/路径
+
+> 本文件是**唯一权威**的接口约定。后端、前端、文档、部署全部以它为准。
+> 需要改动 → 先找 CodeBuddy（主 Agent）确认，改完同步更新本文件。
+
+## 0. 项目定位
+
+`wecom-ops-hub` / 企微运维中枢：**企业微信自建应用**的服务端，提供三件事
+
+1. **监控告警** —— 任意 HTTP 探针失败/恢复 → 推送到企微应用消息
+2. **自定义菜单** —— 菜单按钮直达面板，做「查看状态 / 立即自检 / 重启服务 / 静音」等便捷操作
+3. **Web 配置面板** —— 所有设置项都能在面板里改，无需改环境变量
+
+设计原则：**通用**。不写死任何具体业务（不能出现 `antigravity`、`中转池`、`3636` 之类专用值）。
+一切通过面板配置。别人一条 `docker compose up -d` + 面板填参数即可用。
+
+## 1. 文件所有权（一人一文件，禁止跨范围修改）
+
+| 路径 | 归属 | 说明 |
+|---|---|---|
+| `docker-compose.yml` `.env.example` `.gitignore` `LICENSE` `app/settings.py` `.github/workflows/docker.yml` `docs/CONTRACT.md` | **主 Agent（已冻结）** | 只读，不要改 |
+| `app/*.py` `app/api/*.py` `requirements.txt` | **开发** | 后端 |
+| `app/static/*` | **前端** | 面板 UI |
+| `Dockerfile` `.dockerignore` | **运维** | 镜像 + 部署验证 |
+| `README.md` `README_EN.md` `docs/deploy.md` `docs/wecom-setup.md` | **内容** | 文档 |
+| `docs/wecom-api-spec.md` | **调研** | 企微 API 实测笔记 |
+
+**Git 操作全部由主 Agent 执行。** 其他人只往磁盘写文件，不要 `git add/commit/push`。
+
+工作目录：`/workspace/wecom-ops-hub/`
+
+## 2. 运行时约定
+
+- 容器内监听 **8080**（`uvicorn app.main:app --host 0.0.0.0 --port 8080`）
+- 数据目录 `/data`（env `HUB_DATA_DIR`），SQLite 在 `/data/hub.db`
+- 依赖只允许：`fastapi`、`uvicorn[standard]`、`httpx`、`pycryptodome`、`jinja2`（可选）
+- Python 3.11+，**不要引入需要编译的重依赖**
+- 前端**不要有 npm 构建步骤**：纯静态 HTML/CSS/JS，可直接被 FastAPI 挂载
+
+## 3. 设置项（`app/settings.py` 已定义，键名固定）
+
+见 `app/settings.py` 的 `DEFAULT_SETTINGS`。存储方式：SQLite 表 `settings(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT)`，
+启动时用 `DEFAULT_SETTINGS` 补齐缺失键。
+
+敏感项（`SECRET_KEYS`）：`panel.admin_password`、`wecom.secret`、`wecom.callback_token`、`wecom.callback_aes_key`。
+`GET /api/settings` 返回时用 `settings.mask_settings()` 打码成 `********`；`PUT` 时若收到 `********` 表示「不修改」。
+
+## 4. 数据库表结构（固定）
+
+```sql
+CREATE TABLE IF NOT EXISTS settings(
+  key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS targets(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  url TEXT NOT NULL,
+  method TEXT NOT NULL DEFAULT 'GET',
+  headers TEXT NOT NULL DEFAULT '{}',       -- JSON 对象字符串
+  body TEXT NOT NULL DEFAULT '',
+  expect_status TEXT NOT NULL DEFAULT '200-299',  -- 支持 "200" 或 "200-299" 或 "200,301"
+  timeout_s INTEGER NOT NULL DEFAULT 10,
+  interval_s INTEGER NOT NULL DEFAULT 60,
+  fail_threshold INTEGER NOT NULL DEFAULT 2,
+  silence_minutes INTEGER NOT NULL DEFAULT 30,
+  notify_recovery INTEGER NOT NULL DEFAULT 1,
+  action_type TEXT NOT NULL DEFAULT 'none',  -- none | http
+  action_method TEXT NOT NULL DEFAULT 'POST',
+  action_url TEXT NOT NULL DEFAULT '',
+  action_headers TEXT NOT NULL DEFAULT '{}',
+  action_body TEXT NOT NULL DEFAULT '',
+  action_confirm INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT, updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS probe_results(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_id INTEGER NOT NULL, ts TEXT NOT NULL,
+  ok INTEGER NOT NULL, status INTEGER, latency_ms INTEGER, error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS alerts(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_id INTEGER, ts TEXT NOT NULL, kind TEXT NOT NULL,  -- fail | recovery | test
+  message TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS events(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL, source TEXT NOT NULL, payload TEXT
+);
+```
+
+## 5. HTTP API 契约
+
+面板接口统一前缀 `/api`。鉴权：登录后下发 HttpOnly Cookie `woh_session`；未登录返回 `401 {"error":"unauthorized"}`。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/health` | 免鉴权，返回 `{"ok":true,"version":"..."}` |
+| POST | `/api/login` | body `{"password":"..."}` → `{"ok":true}`，失败 401 |
+| POST | `/api/logout` | 清 Cookie |
+| GET | `/api/settings` | 返回全部设置（敏感项打码） |
+| PUT | `/api/settings` | body 为部分设置对象，只更新传入的键；值为 `********` 则跳过 |
+| POST | `/api/settings/test` | 用当前配置调 `gettoken`，返回 `{"ok":bool,"detail":"..."}` |
+| GET | `/api/targets` | 目标列表 |
+| POST | `/api/targets` | 新建，body 为 target 字段（不含 id） |
+| PUT | `/api/targets/{id}` | 更新 |
+| DELETE | `/api/targets/{id}` | 删除 |
+| POST | `/api/targets/{id}/probe` | 立即探测一次，返回探测结果 |
+| POST | `/api/targets/{id}/action` | 执行该目标绑定的动作（`action_type=http` 时） |
+| GET | `/api/targets/{id}/history?limit=50` | 最近探测记录 |
+| GET | `/api/alerts?limit=50` | 告警历史 |
+| POST | `/api/notify/test` | 发一条测试消息到企微，返回 `{"ok":bool,"detail":"..."}` |
+| GET | `/api/menu` | 返回 `{"remote":{...}|null,"local":{...},"error":"..."}` |
+| PUT | `/api/menu` | body `{"button":[...]}` → 保存本地并推 `menu/create` |
+| DELETE | `/api/menu` | 调 `menu/delete` |
+| GET | `/api/status` | 概览：`{"targets_total":n,"targets_down":n,"last_alerts":[...]}` |
+
+### 企微回调（不鉴权，必须验签）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/wecom/callback` | URL 验证：校验 `msg_signature`，AES 解密 `echostr`，**返回明文 echostr** |
+| POST | `/wecom/callback` | 接收消息/事件：验签 + 解密，**5 秒内返回 `success`**（明文即可） |
+
+回调 URL 由用户在企微后台填成：`{panel.public_url}/wecom/callback`
+
+## 6. 企微 API 用法
+
+基址：`wecom.api_base`；若 `wecom.proxy_url` 非空，则**所有** qyapi 请求走该反代
+（路径原样拼接，例如 `{proxy_url}/cgi-bin/gettoken?corpid=..&corpsecret=..`）。
+
+- 取 token：`GET /cgi-bin/gettoken?corpid=&corpsecret=`（缓存，`expires_in` 提前 300s 刷新）
+- 发消息：`POST /cgi-bin/message/send?access_token=` body `{"touser","toparty","msgtype":"text","agentid":<int>,"text":{"content":...}}`
+  - `agentid` **必须是整数**，不能是字符串
+- 菜单：`POST /cgi-bin/menu/create?access_token=&agentid=<int>` body `{"button":[...]}`
+- 读菜单：`GET /cgi-bin/menu/get?access_token=&agentid=<int>`
+- 删菜单：`GET /cgi-bin/menu/delete?access_token=&agentid=<int>`
+- 回调加解密：AES-256-CBC，key = `base64decode(EncodingAESKey + "=")`；签名 `sha1(sorted(token, timestamp, nonce, encrypt)))`
+
+## 7. 菜单默认模板
+
+`PUT /api/menu` 若传 `{"preset":true}` 则生成默认模板：
+
+```json
+{"button":[
+  {"type":"view","name":"📊 状态","url":"{public_url}/#/status"},
+  {"type":"view","name":"🧪 自检","url":"{public_url}/#/selftest"},
+  {"type":"view","name":"⚙️ 面板","url":"{public_url}/#/settings"},
+  {"type":"click","name":"🔕 静音1小时","key":"SILENCE_1H"}
+]}
+```
+
+`click` 事件在 `POST /wecom/callback` 里处理：`Event=click`，`EventKey=SILENCE_1H` → 全局静音 60 分钟，
+并回一条消息确认。`public_url` 为空时不要生成 view 型按钮（会报错），改为只生成 click 型。
+
+## 8. 面板 UI 契约
+
+单页应用，`index.html` + `app.js` + `style.css`，hash 路由：
+
+- `#/status` 概览（默认页）
+- `#/targets` 目标增删改 + 立即探测 + 执行动作 + 历史
+- `#/settings` 企微参数 + 通知策略 + 测试按钮 + 回调 URL 展示（带一键复制）
+- `#/menu` 菜单编辑 + 一键生成默认菜单 + 推送/删除
+- `#/alerts` 告警历史
+
+要求：**中文界面**、响应式（手机企微里点开要能用）、不引入外部 CDN 依赖（离线可用）。
+
+## 9. 验收标准（Definition of Done）
+
+1. `docker compose up -d` 一条命令起服务，浏览器能打开面板并登录
+2. 面板里填企微参数 → 点「测试」返回成功
+3. 加一个 HTTP 探针目标 → 故意填错 URL → 收到企微告警；改回正确 → 收到恢复通知
+4. 面板里一键生成菜单 → 企微里能看到菜单 → 点「状态」能打开面板
+5. 面板里「重启服务」类动作可配置（HTTP 动作），点确认后真实执行
+6. 回调 URL 验证通过（企微后台「保存」不报错）
+7. README 里别人照着能跑起来，**不出现任何本项目私有信息**

@@ -1,0 +1,22 @@
+services:
+  wecom-ops-hub:
+    image: ghcr.io/yisboss/wecom-ops-hub:latest
+    # 想自己构建就把下面这行注释打开、并把 image 那行注释掉
+    # build: .
+    container_name: wecom-ops-hub
+    restart: unless-stopped
+    ports:
+      # 左边是宿主机端口（可用 .env 里的 HUB_PORT 改），右边固定是容器内的 8080
+      - "${HUB_PORT:-8080}:8080"
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+      HUB_ADMIN_PASSWORD: "${HUB_ADMIN_PASSWORD:-admin}"
+      HUB_DATA_DIR: "/data"
+    volumes:
+      - "${HUB_DATA_DIR:-./data}:/data"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
