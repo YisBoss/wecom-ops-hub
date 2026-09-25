@@ -223,6 +223,8 @@ CREATE TABLE IF NOT EXISTS events(
 - 带 `sub_button` 的父按钮不能再带 `type`/`key`/`url`
 - 每个 `sub_button` 数量 ≤ 5
 - `view` 型必须有 `url`，`click` 型必须有 `key`
+- **名称按字节数**：一级菜单 `name` ≤ 16 字节，二级菜单 ≤ 60 字节
+  （中文 3 字节、emoji 4~6 字节 —— 不能按字符数算）
 
 > **代理注意**：若 `wecom.proxy_url` 指向的是一个**路径白名单**式反代（只放行 gettoken /
 > message/send / menu/create 等），则 `menu/get`、`menu/delete` 会 404。

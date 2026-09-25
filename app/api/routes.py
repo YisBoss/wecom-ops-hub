@@ -268,6 +268,16 @@ def _default_menu_buttons() -> list[dict]:
     ]
 
 
+def _name_error(name: Any, limit: int, label: str) -> str | None:
+    """企微按**字节数**限制按钮名（一级 16 字节 / 二级 60 字节），不是按字符数。"""
+    if not isinstance(name, str) or not name:
+        return f"{label}缺少 name"
+    n = len(name.encode("utf-8"))
+    if n > limit:
+        return f"{label}「{name}」太长：{n} 字节，上限 {limit} 字节（中文 3 字节、emoji 4~6 字节）"
+    return None
+
+
 def _validate_leaf(button: Any) -> str | None:
     """校验单个可点击按钮（view / click）。"""
     if not isinstance(button, dict):
@@ -288,8 +298,11 @@ def _validate_menu_buttons(buttons: Any) -> str | None:
     if not isinstance(buttons, list) or not 1 <= len(buttons) <= 3:
         return "顶层 button 数量必须是 1~3 个（企微硬限制，errcode 40058）"
     for i, b in enumerate(buttons, 1):
-        if not isinstance(b, dict) or not b.get("name"):
-            return f"第 {i} 个按钮缺少 name"
+        if not isinstance(b, dict):
+            return f"第 {i} 个按钮必须是对象"
+        err = _name_error(b.get("name"), 16, f"第 {i} 个按钮")
+        if err:
+            return err
         subs = b.get("sub_button")
         if subs is None:
             err = _validate_leaf(b)
@@ -302,9 +315,13 @@ def _validate_menu_buttons(buttons: Any) -> str | None:
             if b.get(k):
                 return f"「{b['name']}」是父按钮，不能再带 {k}"
         for j, s in enumerate(subs, 1):
+            label = f"「{b['name']}」第 {j} 个子按钮"
+            err = _name_error(s.get("name") if isinstance(s, dict) else None, 60, label)
+            if err:
+                return err
             err = _validate_leaf(s)
             if err:
-                return f"「{b['name']}」第 {j} 个子按钮：{err}"
+                return f"{label}：{err}"
     return None
 
 
