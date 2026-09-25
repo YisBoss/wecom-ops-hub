@@ -235,14 +235,12 @@ async def set_silence(body: SilenceBody, _: None = Depends(require_auth)) -> dic
 # ---------------------------------------------------------------------------
 
 def _default_menu_buttons() -> list[dict]:
+    """默认菜单模板。企微顶层最多 3 个按钮（errcode 40058）。"""
     public_url = db.get_setting("panel.public_url", "").strip()
-    buttons = []
+    buttons: list[dict] = []
     if public_url:
-        buttons = [
-            {"type": "view", "name": "📊 状态", "url": f"{public_url}/#/status"},
-            {"type": "view", "name": "🧪 自检", "url": f"{public_url}/#/selftest"},
-            {"type": "view", "name": "⚙️ 面板", "url": f"{public_url}/#/settings"},
-        ]
+        # 面板入口（含状态/自检/设置等所有页面，hash 路由）
+        buttons.append({"type": "view", "name": "⚙️ 面板", "url": f"{public_url}/#/status"})
     buttons.append({"type": "click", "name": "🔕 静音1小时", "key": "SILENCE_1H"})
     buttons.append({"type": "click", "name": "🔔 解除静音", "key": "UNSILENCE"})
     return buttons
@@ -277,6 +275,11 @@ async def put_menu(body: dict, _: None = Depends(require_auth)) -> dict:
         buttons = body.get("button", [])
     if not buttons:
         raise HTTPException(status_code=400, detail="button 不能为空")
+    if len(buttons) > 3:
+        raise HTTPException(
+            status_code=400,
+            detail="顶层按钮最多 3 个（企微限制 errcode 40058）；子菜单请用二级分组",
+        )
     result = wecom_client.menu_create(buttons)
     db.add_event("menu", {"action": "create", "buttons": buttons, "result": result})
     return {"ok": result.get("errcode") == 0, "detail": result.get("errmsg", ""), "raw": result}

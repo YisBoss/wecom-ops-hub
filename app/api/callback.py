@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+import logging
 import time
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import PlainTextResponse, Response as FastResponse
 
 from .. import db, monitor, wecom_client
+
+logger = logging.getLogger("wecom-ops-hub.callback")
 
 router = APIRouter()
 
@@ -39,6 +42,7 @@ async def callback_verify(request: Request) -> PlainTextResponse:
     token, aes_key, corp_id = _callback_creds()
 
     if not all([token, aes_key, corp_id, msg_signature, timestamp, nonce, echostr]):
+        logger.warning("callback GET 缺少参数或企微凭据未配置，返回 400")
         return PlainTextResponse("missing params", status_code=400)
 
     if not wecom_client.verify_signature(token, timestamp, nonce, echostr, msg_signature):
@@ -59,6 +63,7 @@ async def callback_receive(request: Request) -> PlainTextResponse:
     body = await request.body()
 
     if not all([token, aes_key, corp_id]):
+        logger.warning("callback POST 收到请求但企微凭据未配置，静默返回 success")
         return PlainTextResponse("success")
 
     try:

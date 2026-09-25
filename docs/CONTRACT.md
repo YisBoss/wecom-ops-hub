@@ -144,13 +144,29 @@ CREATE TABLE IF NOT EXISTS events(
 
 ## 7. 菜单默认模板
 
-`PUT /api/menu` 若传 `{"preset":true}` 则生成默认模板：
+> ⚠️ **企微硬限制**：`button` 顶层数组**只能有 1~3 个**元素（实测错误码 40058
+> `field 'button' expect array size in [1, 3]`）；每个父按钮最多 5 个子按钮。
+> 所以不能把 5 个功能平铺在顶层 —— 必须用「父按钮 + sub_button」收拢。
+
+`PUT /api/menu` 若传 `{"preset":true}` 则生成默认模板（**顶层 3 个**）：
 
 ```json
 {"button":[
   {"type":"view","name":"📊 状态","url":"{public_url}/#/status"},
-  {"type":"view","name":"🧪 自检","url":"{public_url}/#/selftest"},
   {"type":"view","name":"⚙️ 面板","url":"{public_url}/#/settings"},
+  {"name":"🔧 操作","sub_button":[
+    {"type":"click","name":"🔕 静音1小时","key":"SILENCE_1H"},
+    {"type":"click","name":"🔔 解除静音","key":"UNSILENCE"},
+    {"type":"view","name":"🧪 自检","url":"{public_url}/#/selftest"},
+    {"type":"view","name":"🚨 告警","url":"{public_url}/#/alerts"}
+  ]}
+]}
+```
+
+`public_url` 为空时不要生成 view 型按钮（会报错），退化成**顶层 2 个** click 按钮：
+
+```json
+{"button":[
   {"type":"click","name":"🔕 静音1小时","key":"SILENCE_1H"},
   {"type":"click","name":"🔔 解除静音","key":"UNSILENCE"}
 ]}
@@ -162,7 +178,17 @@ CREATE TABLE IF NOT EXISTS events(
 - `EventKey=UNSILENCE` → **立即解除静音**（等价 `POST /api/silence {"minutes":0}`），回一条确认消息
 
 > ⚠️ 必须有 `UNSILENCE`：否则用户从菜单点了静音之后就只能干等，是个死胡同。
-> `public_url` 为空时不要生成 view 型按钮（会报错），改为只生成 click 型。
+
+**推送前必须本地校验**（否则只会拿到企微的 40058 报错，用户看不懂）：
+
+- 顶层 `button` 数量 1~3
+- 带 `sub_button` 的父按钮不能再带 `type`/`key`/`url`
+- 每个 `sub_button` 数量 ≤ 5
+- `view` 型必须有 `url`，`click` 型必须有 `key`
+
+> **代理注意**：若 `wecom.proxy_url` 指向的是一个**路径白名单**式反代（只放行 gettoken /
+> message/send / menu/create 等），则 `menu/get`、`menu/delete` 会 404。
+> 这时「推送菜单」仍可用，但「读取远端菜单 / 删除菜单」不可用，面板要能优雅降级并提示用户。
 
 ## 8. 面板 UI 契约
 

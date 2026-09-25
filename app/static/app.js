@@ -189,16 +189,18 @@
 
       // 静音状态条（CONTRACT §5: /api/status 返回 silence_remaining_minutes）
       var mins = s.silence_remaining_minutes;
-      if (mins != null && mins > 0) {
-        v.appendChild(el("div", { class: "card silence-bar" }, [
-          el("span", { class: "silence-icon", text: "🔕" }),
-          el("div", { class: "silence-text" }, [
-            el("div", { class: "silence-title", text: "全局静音中" }),
-            el("div", { class: "muted", text: "告警暂不推送，剩余 " + mins + " 分钟" })
-          ]),
-          el("button", { class: "btn btn-sm", onclick: unsilence, text: "解除静音" })
-        ]));
-      }
+      var silenced = mins != null && mins > 0;
+      v.appendChild(el("div", { class: "card silence-bar" + (silenced ? "" : " silence-bar-idle") }, [
+        el("span", { class: "silence-icon", text: silenced ? "🔕" : "🔔" }),
+        el("div", { class: "silence-text" }, [
+          el("div", { class: "silence-title", text: silenced ? "全局静音中" : "告警正常推送" }),
+          el("div", { class: "muted", text: silenced ? "告警暂不推送，剩余 " + mins + " 分钟" : "点击「静音 1 小时」暂停告警推送" })
+        ]),
+        el("div", { class: "silence-actions" }, [
+          el("button", { class: "btn btn-sm" + (silenced ? " btn-ghost" : " btn-primary"), onclick: silence1h, disabled: silenced, text: "静音 1 小时" }),
+          el("button", { class: "btn btn-sm", onclick: unsilence, disabled: !silenced, text: "解除静音" })
+        ])
+      ]));
 
       var card = el("div", { class: "card" }, [
         el("div", { class: "card-title", text: "最近告警" })
@@ -210,6 +212,13 @@
       }
       v.appendChild(card);
     });
+  }
+
+  function silence1h() {
+    api.post("/api/silence", { minutes: 60 }).then(function (r) {
+      toast("已开启静音 1 小时" + (r.silence_remaining_minutes != null ? "（剩余 " + r.silence_remaining_minutes + " 分钟）" : ""));
+      renderStatus();
+    }).catch(function () {});
   }
 
   function unsilence() {

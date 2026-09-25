@@ -480,6 +480,12 @@ mt-12 { margin-top: 12px; }
   border: 1px solid #ffd591;
   margin-bottom: 12px;
 }
+.silence-bar-idle {
+  background: var(--green-light);
+  border-color: #b7eb8f;
+}
+.silence-bar-idle .silence-title { color: var(--green-dark); }
 .silence-bar .silence-icon { font-size: 22px; }
 .silence-bar .silence-text { flex: 1; }
 .silence-bar .silence-title { font-weight: 600; color: var(--orange); }
+.silence-actions { display: flex; gap: 8px; flex-shrink: 0; }
