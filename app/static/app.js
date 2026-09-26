@@ -100,13 +100,23 @@
   }
 
   // ===== 鉴权 =====
-  function isLoggedIn() { return !!document.cookie.match(/woh_session=/); }
+  // ⚠️ 不能用 document.cookie 判断登录态：woh_session 是 **HttpOnly**，JS 根本读不到。
+  // 2026-09-26 踩过这个坑：登录 POST 明明 200、Cookie 也下发了，但前端读不到 Cookie
+  // → 立刻跳回登录页并把密码框清空 → 用户看到的是「输入密码没有任何反应」。
+  // 正确做法：**问服务端**（/api/status 需要鉴权，401 就说明没登录）。
+  function checkLoggedIn() {
+    return api.get("/api/status").then(
+      function () { return true; },
+      function () { return false; }
+    );
+  }
 
   function onLogout() {
     $("#topbar").hidden = true;
     $("#loginPage").classList.remove("hidden");
     $("#loginPassword").value = "";
-    location.hash = "";
+    // 故意不清 location.hash：菜单里的「⚙️ 面板」是带 #/settings 的深链，
+    // 清掉的话登录后就落到概览页，白点一次。
   }
 
   // 登录
@@ -143,7 +153,8 @@
   };
 
   function router() {
-    if (!isLoggedIn()) { onLogout(); return; }
+    // 这里不再做「登录态」判断：任何接口返回 401 时 req() 会自动 onLogout()，
+    // 客户端自己猜登录态只会猜错（HttpOnly Cookie 读不到）。
     var hash = location.hash.replace(/^#\/?/, "");
     var route = hash || "status";
     if (!routes[route]) route = "status";
@@ -865,11 +876,10 @@
   // ===== 启动 =====
   function boot() {
     initLogin();
-    if (isLoggedIn()) {
-      enterApp();
-    } else {
-      $("#loginPage").classList.remove("hidden");
-    }
+    checkLoggedIn().then(function (ok) {
+      if (ok) { enterApp(); }
+      else { $("#loginPage").classList.remove("hidden"); }
+    });
   }
   document.addEventListener("DOMContentLoaded", boot);
 })();

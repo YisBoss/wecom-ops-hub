@@ -41,6 +41,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Argus", version="1.0.0", lifespan=lifespan)
 
+
+@app.middleware("http")
+async def no_cache_frontend(request, call_next):
+    """面板前端（/ 和 /static/*）一律 `Cache-Control: no-cache`。
+
+    面板是自托管的、改完就重启，而**旧 JS 被浏览器缓存**会让「修好了但用户还是老现象」
+    这种问题极难排查（2026-09-26 踩过：修了登录 bug，用户浏览器还在跑旧 app.js）。
+    带上 ETag 时 no-cache 只是「每次校验一次」，命中就回 304，代价可忽略。
+    """
+    resp = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
 # API 路由（/api 前缀）
 app.include_router(api_routes.router)
 # 企微回调（/wecom/callback，无 /api 前缀）

@@ -101,6 +101,12 @@ CREATE TABLE IF NOT EXISTS events(
 
 面板接口统一前缀 `/api`。鉴权：登录后下发 HttpOnly Cookie `woh_session`；未登录返回 `401 {"error":"unauthorized"}`。
 
+> ⚠️ **前端禁止用 `document.cookie` 判断登录态**：`woh_session` 是 **HttpOnly**，JS 读不到。
+> 必须**问服务端** —— 启动时调一个需要鉴权的接口（本项目用 `GET /api/status`），
+> 401 即未登录；任何接口返回 401 时统一走 `onLogout()`。
+> 2026-09-26 踩过这个坑：登录 POST 返回 200、Cookie 也正常下发，但前端读不到 Cookie
+> → 立刻跳回登录页并清空密码框 → 用户看到的现象是「**输入密码没有任何反应**」。
+
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/health` | 免鉴权，返回 `{"ok":true,"version":"..."}` |
