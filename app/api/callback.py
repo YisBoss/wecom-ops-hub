@@ -86,13 +86,8 @@ async def callback_receive(request: Request) -> PlainTextResponse:
     # 处理 click 事件
     if msg.get("MsgType") == "event" and msg.get("Event") == "click":
         event_key = msg.get("EventKey", "")
-        if event_key == "SILENCE_1H":
-            monitor.silence(60)
-            reply_msg = f"已开启静音 1 小时。当前剩余 {monitor.silence_remaining()} 分钟。"
-        elif event_key == "UNSILENCE":
-            monitor.unsilence()
-            reply_msg = "已解除静音。告警恢复正常推送。"
-        else:
+        reply_msg = _handle_click(event_key)
+        if reply_msg is None:
             return PlainTextResponse("success")
         # 被动回复确认消息（加密回包）
         ts = str(int(time.time()))
@@ -103,3 +98,44 @@ async def callback_receive(request: Request) -> PlainTextResponse:
         return FastResponse(content=reply_xml, media_type="application/xml")
 
     return PlainTextResponse("success")
+
+
+def _handle_click(event_key: str) -> str | None:
+    """把菜单 click 事件转成一句回复文本。返回 None 表示不回复。"""
+    if event_key == "SILENCE_1H":
+        monitor.silence(60)
+        return f"已开启静音 1 小时。当前剩余 {monitor.silence_remaining()} 分钟。"
+    if event_key == "UNSILENCE":
+        monitor.unsilence()
+        return "已解除静音。告警恢复正常推送。"
+
+    # CONTRACT §7.1：ACT:<id> = 执行该目标绑定的 HTTP 动作
+    if event_key.startswith("ACT:"):
+        raw = event_key[4:].strip()
+        if not raw.isdigit():
+            return "该按钮已失效，请在面板里重新生成菜单。"
+        tid = int(raw)
+        target = db.get_target(tid)
+        if target is None:
+            return "该按钮已失效（目标已删除），请在面板里重新生成菜单。"
+        if target.get("action_type") != "http" or not (target.get("action_url") or ""):
+            return f"「{target.get('name')}」没有配置 HTTP 动作，请在面板里补上。"
+        # 静音只压告警通知，不挡用户主动操作
+        silenced = monitor.silence_remaining() > 0
+        result = monitor._execute_action(target)
+        db.add_event("menu-action", {
+            "target_id": tid, "name": target.get("name"),
+            "key": event_key, "result": result,
+        })
+        name = target.get("name") or f"#{tid}"
+        if result.get("ok"):
+            reply = f"✅ {name} 已执行（{result.get('detail', '')}）"
+            if result.get("body"):
+                reply += f"\n{result['body']}"
+        else:
+            reply = f"❌ {name} 执行失败：{result.get('detail', '未知错误')}"
+        if silenced:
+            reply += "\n（注：当前处于静音期，本操作仍已执行，只是不会推送告警）"
+        return reply
+
+    return None

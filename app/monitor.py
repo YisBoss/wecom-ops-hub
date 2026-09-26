@@ -171,20 +171,29 @@ def _maybe_alert(target_id: int, kind: str, message: str,
 
 
 def _execute_action(target: dict) -> dict:
-    """执行目标绑定的 HTTP 动作（菜单「重启服务」之类）。"""
+    """执行目标绑定的 HTTP 动作（菜单「重启服务」/「切换账号」之类）。"""
     if target.get("action_type") != "http":
         return {"ok": False, "detail": "该目标未配置 HTTP 动作"}
     method = (target.get("action_method") or "POST").upper()
     url = target.get("action_url") or ""
     if not url:
         return {"ok": False, "detail": "动作 URL 为空"}
-    headers = json.loads(target.get("action_headers") or "{}")
+    try:
+        headers = json.loads(target.get("action_headers") or "{}")
+    except (ValueError, TypeError):
+        return {"ok": False, "detail": "action_headers 不是合法 JSON"}
     body = target.get("action_body") or ""
     try:
         with httpx.Client(timeout=30, follow_redirects=True) as client:
-            resp = client.request(method, url, headers=headers, content=body)
-        return {"ok": 200 <= resp.status_code < 400,
-                "detail": f"HTTP {resp.status_code}", "status": resp.status_code}
+            resp = client.request(method, url, headers=headers, content=body or None)
+        text = (resp.text or "").strip().replace("\n", " ")
+        return {
+            "ok": 200 <= resp.status_code < 400,
+            "detail": f"HTTP {resp.status_code}",
+            "status": resp.status_code,
+            # 截断给菜单回包用（CONTRACT §7.1 第 5 步：≤200 字符）
+            "body": text[:200],
+        }
     except Exception as e:
         return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
 

@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS targets(
   action_headers TEXT NOT NULL DEFAULT '{}',
   action_body TEXT NOT NULL DEFAULT '',
   action_confirm INTEGER NOT NULL DEFAULT 1,
+  menu_label TEXT NOT NULL DEFAULT '',
+  menu_order INTEGER NOT NULL DEFAULT 0,
   created_at TEXT, updated_at TEXT
 );
 CREATE TABLE IF NOT EXISTS probe_results(
@@ -102,14 +104,30 @@ CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts);
 
 
 def init_db() -> None:
-    """建表 + 用 DEFAULT_SETTINGS 补齐缺失键。幂等。"""
+    """建表 + 迁移旧库 + 用 DEFAULT_SETTINGS 补齐缺失键。幂等。"""
     with cursor() as cur:
         cur.executescript(_SCHEMA)
+        _migrate_targets(cur)
         for key, default_value in DEFAULT_SETTINGS.items():
             cur.execute(
                 "INSERT OR IGNORE INTO settings(key, value, updated_at) VALUES(?,?,?)",
                 (key, default_value, _now()),
             )
+
+
+# v1.1 新增列：老库是 CREATE TABLE IF NOT EXISTS 建的，加列必须显式 ALTER
+_TARGET_MIGRATIONS = (
+    ("menu_label", "TEXT NOT NULL DEFAULT ''"),
+    ("menu_order", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+
+def _migrate_targets(cur: sqlite3.Cursor) -> None:
+    """给已存在的 targets 表补新列（幂等）。"""
+    have = {r[1] for r in cur.execute("PRAGMA table_info(targets)").fetchall()}
+    for col, decl in _TARGET_MIGRATIONS:
+        if col not in have:
+            cur.execute(f"ALTER TABLE targets ADD COLUMN {col} {decl}")
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +165,7 @@ _TARGET_COLS = (
     "expect_status", "timeout_s", "interval_s", "fail_threshold",
     "silence_minutes", "notify_recovery", "action_type", "action_method",
     "action_url", "action_headers", "action_body", "action_confirm",
+    "menu_label", "menu_order",
     "created_at", "updated_at",
 )
 
@@ -186,6 +205,8 @@ def create_target(data: dict) -> dict:
             vals.append(v)
         elif c in ("enabled", "notify_recovery", "action_confirm"):
             vals.append(1 if data.get(c, True if c == "enabled" else (1 if c == "notify_recovery" else 1)) else 0)
+        elif c == "menu_order":
+            vals.append(int(data.get(c) or 0))
         else:
             vals.append(data.get(c, ""))
     ts = _now()
@@ -216,6 +237,8 @@ def update_target(tid: int, data: dict) -> dict | None:
             v = json.dumps(v)
         if c in ("enabled", "notify_recovery", "action_confirm"):
             v = 1 if v else 0
+        elif c == "menu_order":
+            v = int(v or 0)
         sets.append(f"{c}=?")
         vals.append(v)
     if not sets:
@@ -243,6 +266,20 @@ def list_enabled_targets() -> list[dict]:
         f"SELECT {','.join(_TARGET_COLS)} FROM targets WHERE enabled=1 ORDER BY id"
     ).fetchall()
     return [_row_to_target(r) for r in rows]
+
+
+def list_menu_targets(limit: int = 5) -> list[dict]:
+    """菜单用：带 menu_label 且配了 HTTP 动作的目标，按 (menu_order,id) 升序。
+
+    CONTRACT §7.1：不满足条件的 menu_label 目标由调用方跳过并记日志。
+    """
+    conn = get_conn()
+    rows = conn.execute(
+        f"SELECT {','.join(_TARGET_COLS)} FROM targets "
+        "WHERE menu_label IS NOT NULL AND menu_label != '' "
+        "ORDER BY menu_order, id"
+    ).fetchall()
+    return [_row_to_target(r) for r in rows][:limit]
 
 
 # ---------------------------------------------------------------------------

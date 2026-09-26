@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -20,6 +21,8 @@ from ..settings import (
     is_masked,
 )
 from .auth import is_logged_in, login, logout
+
+logger = logging.getLogger("argus.routes")
 
 router = APIRouter(prefix="/api")
 
@@ -65,6 +68,9 @@ class TargetBody(BaseModel):
     action_headers: Any = "{}"
     action_body: str = ""
     action_confirm: bool = True
+    # CONTRACT §7.1：把该目标的动作挂到企微菜单（空 = 不进菜单）
+    menu_label: str = ""
+    menu_order: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -244,28 +250,50 @@ async def set_silence(body: SilenceBody, _: None = Depends(require_auth)) -> dic
 # ---------------------------------------------------------------------------
 
 def _default_menu_buttons() -> list[dict]:
-    """默认菜单模板（CONTRACT §7）。
+    """默认菜单模板（CONTRACT §7 / §7.1）。
 
-    企微硬限制：顶层 button 只能 1~3 个（errcode 40058），父按钮最多 5 个子按钮，
-    所以功能按钮必须收进「🔧 操作」的 sub_button 里，不能平铺在顶层。
-    public_url 为空时不能生成 view 型按钮（企微会报错），退化成 2 个 click。
+    企微硬限制：顶层 button 只能 1~3 个（errcode 40058），父按钮最多 5 个子按钮。
+    `🔀 切换` 的内容来自数据库里带 `menu_label` 的目标（按 menu_order,id 取前 5），
+    一个都没有时整块不出现。
+    public_url 为空时不能生成 view 型按钮（企微会报错），退化成纯 click。
     """
     public_url = db.get_setting("panel.public_url", "").strip().rstrip("/")
+
+    action_buttons: list[dict] = []
+    for t in db.list_menu_targets(limit=5):
+        if t.get("action_type") != "http" or not (t.get("action_url") or ""):
+            logger.warning(
+                "目标 %s(%s) 配了 menu_label「%s」但没有 HTTP 动作，跳过不进菜单",
+                t.get("id"), t.get("name"), t.get("menu_label"),
+            )
+            continue
+        action_buttons.append(
+            {"type": "click", "name": t["menu_label"], "key": f"ACT:{t['id']}"}
+        )
+
     if not public_url:
-        return [
-            {"type": "click", "name": "🔕 静音1小时", "key": "SILENCE_1H"},
-            {"type": "click", "name": "🔔 解除静音", "key": "UNSILENCE"},
-        ]
-    return [
+        # 顶层只能 3 个：动作按钮最多 1 个，剩下留给静音
+        return (
+            action_buttons[:1]
+            + [
+                {"type": "click", "name": "🔕 静音1小时", "key": "SILENCE_1H"},
+                {"type": "click", "name": "🔔 解除静音", "key": "UNSILENCE"},
+            ]
+        )
+
+    buttons: list[dict] = [
         {"type": "view", "name": "📊 状态", "url": f"{public_url}/#/status"},
-        {"type": "view", "name": "⚙️ 面板", "url": f"{public_url}/#/settings"},
-        {"name": "🔧 操作", "sub_button": [
-            {"type": "click", "name": "🔕 静音1小时", "key": "SILENCE_1H"},
-            {"type": "click", "name": "🔔 解除静音", "key": "UNSILENCE"},
-            {"type": "view", "name": "🧪 自检", "url": f"{public_url}/#/selftest"},
-            {"type": "view", "name": "🚨 告警", "url": f"{public_url}/#/alerts"},
-        ]},
     ]
+    if action_buttons:
+        buttons.append({"name": "🔀 切换", "sub_button": action_buttons})
+    buttons.append({"name": "🔧 操作", "sub_button": [
+        {"type": "click", "name": "🔕 静音1小时", "key": "SILENCE_1H"},
+        {"type": "click", "name": "🔔 解除静音", "key": "UNSILENCE"},
+        {"type": "view", "name": "🧪 自检", "url": f"{public_url}/#/selftest"},
+        {"type": "view", "name": "🚨 告警", "url": f"{public_url}/#/alerts"},
+        {"type": "view", "name": "⚙️ 设置", "url": f"{public_url}/#/settings"},
+    ]})
+    return buttons
 
 
 def _name_error(name: Any, limit: int, label: str) -> str | None:

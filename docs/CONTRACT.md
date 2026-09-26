@@ -76,6 +76,9 @@ CREATE TABLE IF NOT EXISTS targets(
   action_headers TEXT NOT NULL DEFAULT '{}',
   action_body TEXT NOT NULL DEFAULT '',
   action_confirm INTEGER NOT NULL DEFAULT 1,
+  -- v1.1 新增：把该目标的动作暴露成企微菜单按钮（见 §7.1）
+  menu_label TEXT NOT NULL DEFAULT '',      -- 空 = 不进菜单
+  menu_order INTEGER NOT NULL DEFAULT 0,    -- 升序；相同则按 id
   created_at TEXT, updated_at TEXT
 );
 
@@ -192,34 +195,68 @@ CREATE TABLE IF NOT EXISTS events(
 > `field 'button' expect array size in [1, 3]`）；每个父按钮最多 5 个子按钮。
 > 所以不能把 5 个功能平铺在顶层 —— 必须用「父按钮 + sub_button」收拢。
 
-`PUT /api/menu` 若传 `{"preset":true}` 则生成默认模板（**顶层 3 个**）：
+`PUT /api/menu` 若传 `{"preset":true}` 则生成默认模板（**顶层 2~3 个**）。
+
+**v1.1 起，`🔀 切换` 菜单由数据库里带 `menu_label` 的目标动态生成**（见 §7.1）；
+没有任何这样的目标时，`🔀 切换` 整块不出现，退化成顶层 2 个：
 
 ```json
 {"button":[
   {"type":"view","name":"📊 状态","url":"{public_url}/#/status"},
-  {"type":"view","name":"⚙️ 面板","url":"{public_url}/#/settings"},
   {"name":"🔧 操作","sub_button":[
     {"type":"click","name":"🔕 静音1小时","key":"SILENCE_1H"},
     {"type":"click","name":"🔔 解除静音","key":"UNSILENCE"},
     {"type":"view","name":"🧪 自检","url":"{public_url}/#/selftest"},
-    {"type":"view","name":"🚨 告警","url":"{public_url}/#/alerts"}
+    {"type":"view","name":"🚨 告警","url":"{public_url}/#/alerts"},
+    {"type":"view","name":"⚙️ 设置","url":"{public_url}/#/settings"}
   ]}
 ]}
 ```
 
-`public_url` 为空时不要生成 view 型按钮（会报错），退化成**顶层 2 个** click 按钮：
+有 `menu_label` 目标时，插入顶层第 2 位（**最多取前 5 个**，按 `menu_order,id` 升序）：
 
 ```json
 {"button":[
-  {"type":"click","name":"🔕 静音1小时","key":"SILENCE_1H"},
-  {"type":"click","name":"🔔 解除静音","key":"UNSILENCE"}
+  {"type":"view","name":"📊 状态","url":"{public_url}/#/status"},
+  {"name":"🔀 切换","sub_button":[
+    {"type":"click","name":"<目标的 menu_label>","key":"ACT:<目标 id>"}
+  ]},
+  {"name":"🔧 操作","sub_button":[ "...同上一份，5 个..." ]}
 ]}
 ```
+
+`public_url` 为空时不要生成 view 型按钮（会报错），退化成**顶层 1~2 个** click 按钮
+（`SILENCE_1H` / `UNSILENCE`，以及最多 5 个 `ACT:` 按钮）。
+
+### 7.1 菜单动作按钮 `ACT:<id>`
+
+**用途**：让用户从企微菜单**一键触发**某个目标绑定的 HTTP 动作
+（典型场景：切换上游账号池里的当前账号、切换某个本地服务的模型配置）。
+
+**生成规则**：目标满足 `menu_label != ''` 且 `action_type == 'http'` 且 `action_url != ''`
+→ 生成一个 `{"type":"click","name":"<menu_label>","key":"ACT:<id>"}`。
+不满足条件的 `menu_label` 目标**跳过并记日志**，不要生成会点不动的按钮。
+
+**`click` 事件处理**（在 `POST /wecom/callback` 里）：
+
+1. `EventKey` 形如 `ACT:12` → 取 id=12 的目标
+2. 目标不存在 / 不满足上述条件 → 回一条「该按钮已失效，请在面板里重新生成菜单」，**不要静默**
+3. 处于**全局静音**期 → 仍然**执行动作**（静音只压告警通知，不挡用户主动操作），但回复里注明
+4. 执行 `action_method` / `action_url` / `action_headers` / `action_body`，超时用 `timeout_s`
+5. 回一条文本消息：`✅ <目标名> 已执行` + `HTTP <status>` + 响应体截断（≤200 字符）
+   失败则 `❌ <目标名> 执行失败：<错误>`
+6. 动作执行**不写 alerts 表**；写 `events` 表（`source='menu-action'`），便于排查
+
+> ⚠️ **不做二次确认**：企微菜单 click 没有二次确认能力，所以 `menu_label` 的目标
+> 应当是**幂等、可回退**的操作。破坏性操作（删除、重启生产）**不要**挂到菜单上。
+> 面板里执行同一条动作时仍走 `action_confirm`。
+
 
 `click` 事件在 `POST /wecom/callback` 里处理：
 
 - `EventKey=SILENCE_1H` → 全局静音 60 分钟，回一条确认消息
 - `EventKey=UNSILENCE` → **立即解除静音**（等价 `POST /api/silence {"minutes":0}`），回一条确认消息
+- `EventKey=ACT:<id>` → 执行该目标的 HTTP 动作，回一条结果消息（见 §7.1）
 
 > ⚠️ 必须有 `UNSILENCE`：否则用户从菜单点了静音之后就只能干等，是个死胡同。
 
@@ -241,13 +278,16 @@ CREATE TABLE IF NOT EXISTS events(
 单页应用，`index.html` + `app.js` + `style.css`，hash 路由：
 
 - `#/status` 概览（默认页）
-- `#/targets` 目标增删改 + 立即探测 + 执行动作 + 历史
+- `#/targets` 目标增删改 + 立即探测 + 执行动作 + 历史 + **菜单按钮设置（`menu_label` / `menu_order`）**
 - `#/settings` 企微参数 + 通知策略 + 测试按钮 + 回调 URL 展示（带一键复制）
-- `#/menu` 菜单编辑 + 一键生成默认菜单 + 推送/删除
+- `#/menu` 菜单编辑 + 一键生成默认菜单 + 推送/删除（**预览里要能看到 `ACT:` 动作按钮**）
 - `#/selftest` 自检（企微连通性测试 + 发测试消息 + 一键探测全部目标）
 - `#/alerts` 告警历史
 
 要求：**中文界面**、响应式（手机企微里点开要能用）、不引入外部 CDN 依赖（离线可用）。
+
+> ⚠️ **`menu_label` 的名称按 UTF-8 字节数校验**（二级 ≤ 60 字节），与 §7 的菜单校验同一套规则。
+> 前端在输入框旁实时显示字节数，超了直接拦，不要等推送时才 400。
 
 ## 9. 验收标准（Definition of Done）
 
